@@ -1,37 +1,31 @@
-# modular-kv
+# modular-kv / kv-asym-quant — Asymmetric KV quantization codec
 
-KV-block primitives for Modular MAX/Mojo, plus two **separate** use cases that
-build on them. Split into three branches so the concerns don't get conflated
-(they did once — see below).
+> **Scope note (read this):** this branch is **NOT** the KV-cache *compatibility*
+> work. It is a *different* concern — KV **compression/movement**: packing KV
+> bytes smaller (K kept at 16-bit, V quantized to 8-bit) for cheaper storage and
+> HBM↔CPU transfer. It is useful and worth keeping, but it was conflated with the
+> compatibility contract once, so it lives on its own branch. The compatibility
+> work is on `kv-compat`.
 
-## Branches
+Builds on `main` only for the `KVRepresentationKey` descriptor: the codec is
+*driven by* `quant_codec="k16v8"` in that descriptor (the descriptor says how the
+bytes are encoded; this branch is the code that encodes/decodes them).
 
-| Branch | What it is |
-|---|---|
-| `main` | **Shared base.** Generic KV-block primitives only: the canonical, cross-language key encoding and the `KVRepresentationKey` descriptor (how a block's bytes are laid out / encoded). Both use cases import this. Nothing use-case-specific lives here. |
-| `kv-compat` | **KV-cache compatibility** (the primary goal). A provenance-complete, layered block *identity* contract so a cached KV block is only reused when it is truly compatible — making the vLLM #44250 LoRA "clash" class un-representable. Conformance suite + Mojo compile-time totality + the KVConnector-v1 provenance-envelope proposal. |
-| `kv-asym-quant` | **Asymmetric KV quantization codec** (useful, but a *different* concern — KV *compression/movement*, not compatibility). K16/V8 pack/unpack. Kept on its own branch so it is not mistaken for the compatibility work. |
+## Contents
 
-`main` is the generic trunk; `kv-compat` and `kv-asym-quant` each branch from it
-and add only their own code. They share `main`'s descriptor + encoding.
+- `kv_codec.mojo` — single-source asymmetric codec (K16 kept, V fp32→int8,
+  per-block scale) with round-trip correctness + a throughput number. CPU first
+  cut; the same source is the GPU-kernel starting point.
 
-## Why the split
+## Status / next
 
-The compatibility idea (KV blocks that know when they're safe to reuse) got
-conflated with the asymmetric-quantization codec (KV bytes packed smaller). They
-are different: one is **correctness/identity**, the other is
-**performance/representation**. The only genuine shared surface is the
-`KVRepresentationKey` descriptor — a compatibility *key layer* on one side, and
-the thing the codec *consumes to know how to pack* on the other. That shared
-surface lives on `main`; everything else is branch-specific.
+- CPU first cut works: ~560 Melem/s pack, round-trip max-abs error ~0.004.
+- **Next:** port to a gfx1100 GPU kernel via `DeviceContext`, fuse
+  paged↔contiguous gather, benchmark HBM↔CPU vs a naive copy+cast. Env:
+  `~/envs/modular-max` on prune's W7900 (see the `modular` skill).
 
-## Running
+## Relationship to your other work
 
-- Python (`main`, `kv-compat`): stdlib only. `python3 conformance.py` on
-  `kv-compat`.
-- Mojo (all branches): needs the MAX/Mojo env on prune's W7900 —
-  `~/envs/modular-max` (see the `modular` shared skill). GPU work targets
-  gfx1100.
-
-Design docs / writeups live in
-`/data/knlp-key-results/modular-kv-provenance-contract-20260707/`.
+This overlaps the existing **asymmetric-kv** line (K16/V8, V-only FP8, LMCache
+serde). Treat this branch as the MAX/Mojo-side codec experiment; fold results
+back into that line rather than the compatibility work.
