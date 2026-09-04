@@ -65,6 +65,28 @@ class KVRepresentationKey:
     tp_world: int
     wire_version: int
 
+    def __post_init__(self) -> None:
+        """Reject descriptors that cannot describe a real block.
+
+        Checking that a field is present is not the same as checking that its
+        value is possible. Ranks are counted from zero within a world, so rank
+        1 of a world of 1 names a shard that cannot exist; a descriptor able to
+        hold it will happily key blocks nothing ever produced.
+        """
+        if self.tp_world < 1:
+            raise ValueError(f"tp_world must be >= 1, got {self.tp_world}")
+        if not 0 <= self.tp_rank < self.tp_world:
+            raise ValueError(
+                f"tp_rank must satisfy 0 <= rank < world, got rank "
+                f"{self.tp_rank} of world {self.tp_world}")
+        if self.page_size < 1:
+            raise ValueError(f"page_size must be >= 1, got {self.page_size}")
+        if self.wire_version < 1:
+            raise ValueError(f"wire_version must be >= 1, got {self.wire_version}")
+        for name in ("kv_dtype", "quant_codec", "scale_policy", "layout"):
+            if not getattr(self, name):
+                raise ValueError(f"{name} must be a non-empty descriptor")
+
     def digest(self) -> str:
         return sha(enc(
             "representation",
