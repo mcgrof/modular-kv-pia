@@ -11,9 +11,9 @@ contexts ever encode to the same key, one user is served another user's
 attention state. The output is silently wrong, and if the two users are
 different people, it is a data leak.
 
-This private branch prototypes a block identity and demonstrates the narrower
-guarantees at their actual enforcement points: construction in Python and
-required-argument checking in Mojo.
+This private branch prototypes an artifact-bound block identity and demonstrates
+the narrower guarantees at their actual enforcement points: schema construction
+and registration in Python, and required-argument checking in Mojo.
 
 ## The bug this exists to end
 
@@ -62,11 +62,19 @@ external key from a subset, which is precisely the path #44250 took. "This
 request has no adapter" is spelled explicitly as `AdapterIdentity.none()`, never
 as an omitted field, so the absence of an adapter is itself part of the key.
 
-**Identity currently uses content plus a generation counter, not a name.** A
-rename therefore preserves legal sharing, while changed content separates.
-The generation is process-local, however, so it cannot be portable identity
-across workers. Binding identity to what the loader actually opened and keeping
-lifecycle invalidation local are the next implementation boundary.
+**Identity comes from loaded sources.** `ContractRegistry.register()` accepts
+the open regular files used by the loader, not paths or operator-written
+digests. It hashes their contents and retains duplicate descriptors as lifecycle
+seals. Adapter content is the portable identity; the local generation remains
+on the opaque handle and is deliberately excluded from cross-worker keys.
+Renaming or loading the same shards in another order preserves legal sharing,
+while changed content separates and mutation invalidates the old handle.
+
+**Requests bind capabilities, not names.** Registration returns an immutable
+`RegistrationHandle`. An immutable `RequestDescriptor` carries that handle,
+effective model inputs, access scope, and reuse policy. Its schema-derived,
+versioned digest seals the final block identity, so adding a required field
+changes the key without maintaining a second field list.
 
 A total key over a *dishonest* identity would still be wrong, so
 `check_obligations()` closes the last gap by cross-checking the identity against
@@ -82,6 +90,7 @@ standard library alone:
 ```
 python3 conformance.py      # exit 0 iff every check passes
 python3 test_envelope.py    # the envelope and its encoder
+python3 -m unittest -v test_contract.py
 ```
 
 It rebuilds each historical bug as a deliberately lossy key function and shows
@@ -148,11 +157,11 @@ the shared surface.
 
 ## Files
 
-`kv_identity.py` holds the layered identity, the total derivation, and the
-obligation check, building on `main`'s `kvblock.py` for the canonical encoding
-and the representation descriptor. `conformance.py` is the suite described
-above. `kv_envelope.py` reduces an identity to bytes another language can
-reproduce, and `test_envelope.py` checks it. `mojo/kv_identity.mojo` and
+`kv_identity.py` holds the layered identity, total derivation, and obligation
+check. `kv_contract.py` holds artifact registration, handles, and request
+descriptors. `kvblock.py` provides schema-total encoding and the structured
+K/V representation. `conformance.py`, `test_envelope.py`, and
+`test_contract.py` are the Python suites. `mojo/kv_identity.mojo` and
 `mojo/missing_field.mojo` are the compile-time demonstration and its negative
 case. `docs/` holds the connector proposal.
 

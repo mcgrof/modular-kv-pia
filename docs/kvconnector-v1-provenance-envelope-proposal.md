@@ -120,9 +120,9 @@ beyond the process that wrote it.
 
 **The adapter is identified by a mutable label**, as §2 sets out, so inheriting
 the engine's hash inherits #30931 and #42125 along with it. The semantic layer
-in `kv_identity.py` uses content plus a generation counter. That is stronger
-than a mutable label locally, but the process-local counter is not portable
-content identity and must not fragment otherwise compatible workers.
+in `kv_identity.py` uses loaded content as portable identity and keeps the local
+lifecycle generation out of cross-worker keys. It is therefore stronger than a
+mutable label without confusing process-local reload order with content.
 
 **Historical root result, withdrawn for the current baseline.** The September 3
 tree produced different roots in the recorded three-process probe. Current

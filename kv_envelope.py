@@ -180,6 +180,7 @@ def build_envelope(identity: KVBlockIdentity, parent_key: bytes,
         "semantic": digests["semantic"],
         "representation": digests["representation"],
         "access": digests["access"],
+        "descriptor": digests["descriptor"],
         "parent": parent_key,
         "tokens": block_tokens,
     })

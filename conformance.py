@@ -104,6 +104,10 @@ case("legal sharing: identical inputs -> identical key",
      correct_key(ADAPTER_A) == correct_key(ADAPTER_A))
 case("label is not identity: rename (same content) -> same key",
      correct_key(ADAPTER_A) == correct_key(ADAPTER_A_RENAMED))
+case("local load generation does not fragment portable identity",
+     correct_key(ADAPTER_A)
+     == correct_key(AdapterIdentity("my-lora", "sha256:AAA", 99, "qkvo")))
+
 # 3. layer isolation (the flat-key trap)
 case("representation isolation: bf16 vs k16v8 -> different key",
      correct_key(ADAPTER_A, quant="none") != correct_key(ADAPTER_A, quant="k16v8"))

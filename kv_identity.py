@@ -12,8 +12,8 @@ Rules (see docs/ + the design writeup):
     (shared, from kvblock) / Access.
   * derive_key() is TOTAL: no external key can be built from a subset -- the
     #44250 failure (connector drops the LoRA dimension) becomes impossible.
-  * Identity from content plus a lifecycle generation, not names. A registry
-    is still needed to make the content source trustworthy and portable.
+  * Portable identity from loaded content, never names or process-local load
+    order. Lifecycle generation is enforced by the registry handle.
 stdlib only.
 """
 
@@ -38,14 +38,17 @@ from kvblock import (
 
 @dataclass(frozen=True)
 class AdapterIdentity:
-    """`name` is a label; content and generation currently form identity."""
+    """Content is portable identity; generation is a local lifecycle guard."""
     # Excluded from the digest on purpose: an adapter renamed with unchanged
     # weights is the same adapter and must keep its cache. The exclusion is
     # declared on the field so it is visible where the field is, and so that
     # the default for anything added later is to be included.
     name: str = field(metadata=IDENTITY_EXCLUDED)
-    content_hash: str
-    generation: int
+    content_hash: str    # digest of the artifacts the loader actually opened
+    # A per-process load counter cannot be portable content identity. The
+    # registry handle validates lifecycle locally; workers with identical
+    # content must still derive identical external identities.
+    generation: int = field(metadata=IDENTITY_EXCLUDED)
     activation_policy: str
 
     @staticmethod
@@ -116,6 +119,9 @@ class KVBlockIdentity:
     semantic: KVSemanticKey
     representation: KVRepresentationKey   # shared base type
     access: KVAccessKey
+    # Keep this schema-total request seal separate so the three concern layers
+    # remain inspectable while a newly added request field still moves the key.
+    descriptor_digest: str = ""
 
     def __post_init__(self) -> None:
         _require_no_none(self)
@@ -123,7 +129,8 @@ class KVBlockIdentity:
     def layer_digests(self) -> dict:
         return {"semantic": self.semantic.digest(),
                 "representation": self.representation.digest(),
-                "access": self.access.digest()}
+                "access": self.access.digest(),
+                "descriptor": self.descriptor_digest}
 
 
 def derive_key(identity: KVBlockIdentity, parent_key: str,
@@ -132,8 +139,9 @@ def derive_key(identity: KVBlockIdentity, parent_key: str,
     if not isinstance(identity, KVBlockIdentity):
         raise TypeError("derive_key requires a fully-formed KVBlockIdentity")
     d = identity.layer_digests()
-    return sha(enc("block/v1", s(d["semantic"]), s(d["representation"]),
-                   s(d["access"]), s(parent_key), block_token_bytes))
+    return sha(enc("block/v2", s(d["semantic"]), s(d["representation"]),
+                   s(d["access"]), s(d["descriptor"]), s(parent_key),
+                   block_token_bytes))
 
 
 KNOWN_OBLIGATIONS = frozenset({
