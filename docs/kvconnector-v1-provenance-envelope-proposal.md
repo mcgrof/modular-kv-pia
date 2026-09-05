@@ -15,6 +15,14 @@ second change. Nothing was served and there is no performance number. Line
 numbers below are a convenience and will drift; symbol names are the durable
 reference.
 
+**Corrections after independent review (2026-09-04):** this document records a
+historical reproduction, not the current baseline. Current vLLM cryptographic
+hashing uses a fixed shareable default root; the unconditional random-root claim
+below is withdrawn. LMCache already partitions its composite key by dtype,
+world size, and worker id; the still-open representation dimensions are codec,
+scale policy, layout, and page size. Adapter separation below is a conservative
+safety policy, not a claim that every K/V element changes.
+
 ## 1. Background
 
 A serving engine caches the attention state of a transformer — the per-token Key
@@ -30,10 +38,10 @@ produce one key, a request is served another request's attention state: wrong
 output, and a cross-user leak if the two requests belong to different people.
 
 The dimension that keeps causing this is the **LoRA adapter** — a small set of
-fine-tuning weight deltas applied on top of a base model. An adapter changes the
-attention computation, and therefore changes every cached K and V value, while
-changing nothing about the prompt text. Two users sending identical text under
-different adapters must not share cache entries.
+fine-tuning weight deltas applied on top of a base model. An adapter can change
+the attention computation and resulting cached state while changing nothing
+about the prompt text. A conservative contract therefore does not share entries
+between different adapters.
 
 ## 2. What vLLM already gets right, and the one place it does not
 
@@ -112,32 +120,20 @@ beyond the process that wrote it.
 
 **The adapter is identified by a mutable label**, as §2 sets out, so inheriting
 the engine's hash inherits #30931 and #42125 along with it. The semantic layer
-in `kv_identity.py` — content hash plus generation counter — is strictly
-stronger than what the engine computes, which is why the envelope derives its
-own semantic digest rather than adopting `BlockHash` wholesale.
+in `kv_identity.py` uses content plus a generation counter. That is stronger
+than a mutable label locally, but the process-local counter is not portable
+content identity and must not fragment otherwise compatible workers.
 
-**The chain root is random unless the operator intervenes.** `init_none_hash()`
-sets `NONE_HASH`, the parent of the first block, to `os.urandom(32)` whenever
-`PYTHONHASHSEED` is unset — and vLLM logs a warning saying block hashes will not
-be reproducible. Since every block hash chains from that root, the whole chain
-is per-process random by default. Measured over three separate processes on one
-identical request, the engine's hash came out `0058b737…`, `f363ac32…` and
-`673dad47…`, while the envelope key was `6007b002…` every time; with
-`PYTHONHASHSEED=0` the engine's value stabilized and the envelope's was
-unchanged. That is fine for a cache private to one process and fatal for a
-shared one: it is LMCache #2511's failure, reachable without anybody writing a
-lossy key at all. A key that outlives a process should not depend on an
-environment variable being set correctly.
+**Historical root result, withdrawn for the current baseline.** The September 3
+tree produced different roots in the recorded three-process probe. Current
+vLLM's `resolve_none_hash_seed()` gives cryptographic hash functions a fixed,
+shareable default when `PYTHONHASHSEED` is unset. The envelope keeps its own
+versioned constant, but root instability is no longer a claimed contribution.
 
-**Representation is not in the hash.** The four folded dimensions are all
-semantic or access-scoped. Nothing covers how the bytes are *encoded* — dtype,
-quantization codec, scale policy, page size, layout, head geometry,
-tensor-parallel rank and world. Within a single engine that is sound, since the
-configuration is fixed. Across a cache shared by differently-configured engines
-it is not: a bf16 block and a quantized block of the same tokens under the same
-adapter hash identically, as do blocks written by different tensor-parallel
-ranks. This is the layer `KVRepresentationKey` on `main` describes, and it is
-the envelope's real contribution.
+**Representation coverage is incomplete, not absent.** LMCache's composite
+`CacheEngineKey` already includes dtype, world size, and worker id. The gap to
+demonstrate is codec, scale policy, layout, and page size at the composite-key
+and reader-validation boundary.
 
 ## 5. Proposal
 

@@ -1,7 +1,7 @@
 # modular-kv — KV-cache reuse that cannot cross contexts
 
-*(branch `kv-compat`; the shared trunk is `main`, the codec work is
-`kv-asym-quant`)*
+*(branch `2026-09-04-feature-resolved-kv-contract`; the shared trunk is
+`main`, the codec work is `kv-asym-quant`)*
 
 A serving engine caches the attention state of a transformer — the per-token Key
 and Value tensors, the "KV cache" — so that a later request sharing a prefix can
@@ -11,19 +11,19 @@ contexts ever encode to the same key, one user is served another user's
 attention state. The output is silently wrong, and if the two users are
 different people, it is a data leak.
 
-This branch defines a block identity that cannot lose the fields that make two
-contexts different, and demonstrates it in two languages: enforced when a
-constructor runs in Python, and enforced by the compiler in Mojo.
+This private branch prototypes a block identity and demonstrates the narrower
+guarantees at their actual enforcement points: construction in Python and
+required-argument checking in Mojo.
 
 ## The bug this exists to end
 
 vLLM issue #44250. Two users share a base model and prompt text but run
-different LoRA adapters — small fine-tuning weight deltas that change the
-attention computation, and therefore change every cached K and V value. vLLM's
-own internal block hash accounted for the adapter. The connector that exports
+different LoRA adapters — small fine-tuning weight deltas that can change the
+attention computation and resulting cached state. Conservative separation is a
+safety policy, not a claim that every element changes. vLLM's internal block
+hash accounted for the adapter by its mutable name. The connector that exports
 blocks to an external cache did not: it re-derived its own key from a subset of
-the request — tokens, model, cache salt — so both adapters mapped onto one key
-and the second user received the first user's cached attention state.
+the request — tokens, model, cache salt — so both adapters mapped onto one key.
 
 Two siblings in the same family. Issue #30931 keyed on the adapter's *name*, a
 mutable label, so two different adapters sharing a name collided. Issue #42125
@@ -62,10 +62,11 @@ external key from a subset, which is precisely the path #44250 took. "This
 request has no adapter" is spelled explicitly as `AdapterIdentity.none()`, never
 as an omitted field, so the absence of an adapter is itself part of the key.
 
-**Identity comes from stable sources.** An adapter is identified by its content
-hash and a generation counter, never by its name. Renaming an adapter therefore
-keeps its key and legal sharing survives; reloading different weights under the
-same name changes the key, which is #30931 and #42125 closed by construction.
+**Identity currently uses content plus a generation counter, not a name.** A
+rename therefore preserves legal sharing, while changed content separates.
+The generation is process-local, however, so it cannot be portable identity
+across workers. Binding identity to what the loader actually opened and keeping
+lifecycle invalidation local are the next implementation boundary.
 
 A total key over a *dishonest* identity would still be wrong, so
 `check_obligations()` closes the last gap by cross-checking the identity against
@@ -123,20 +124,18 @@ to the systems that need it — vLLM and LMCache are Python, NIXL is Rust and C+
 `kv_envelope.py` is that crossing: it reduces a complete identity to an opaque
 external key plus the representation metadata a transport legitimately needs,
 encoded as canonical CBOR so a producer written in another language reproduces
-the same bytes, and rooted at a fixed digest rather than a per-process random
-value. `test_envelope.py` checks it against the `cbor2` library where that is
+the same bytes, and rooted at a contract constant. `test_envelope.py` checks it
+against the `cbor2` library where that is
 installed, which is what catches a misreading of the format rather than mere
 agreement with ourselves.
 
-**What is not done is the far side.** The envelope has been driven through
-vLLM's real LMCache multi-process connector at `upstream/main`, where an
-87-line patch flips the #44250 reproduction from a wrong hit to a correct miss;
-LMCache does not yet *consume* those keys, nothing was served, and there is no
-performance number. `docs/kvconnector-v1-provenance-envelope-proposal.md` has
-the full account, including two things that run turned up: vLLM identifies a
-LoRA adapter in its own hash by name rather than by content, so a reload is
-invisible to the engine itself, and its hash chain is seeded with `os.urandom`
-unless `PYTHONHASHSEED` is set.
+**What is not done is the far side.** The envelope has been driven through a
+historical vLLM LMCache multi-process connector reproduction, but LMCache does
+not yet consume those keys, nothing was served, and there is no performance
+number. Current vLLM cryptographic hashing has a shareable default root, so the
+older random-root claim is withdrawn. The open milestone is one real external
+store/load path with positive controls separating external reuse from the
+engine's internal prefix cache.
 
 Two known gaps in the Mojo side, so nobody discovers them the hard way. It is a
 demonstrator, not the production producer: it derives its digests by string
