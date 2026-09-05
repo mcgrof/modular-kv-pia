@@ -13,7 +13,15 @@ from __future__ import annotations
 import sys
 from dataclasses import dataclass
 
-from kvblock import KVRepresentationKey, enc, sha, s   # shared base
+from kvblock import (
+    KVComponentFormat,
+    KVPartitionMap,
+    KVRepresentationKey,
+    KVScaleMetadata,
+    enc,
+    sha,
+    s,
+)
 from kv_identity import (
     AdapterIdentity, ReuseSemantics, KVSemanticKey, KVAccessKey,
     KVBlockIdentity, derive_key, check_obligations,
@@ -31,8 +39,14 @@ ADAPTER_A_RENAMED = AdapterIdentity("renamed", "sha256:AAA", 1, "qkvo")
 def rep(quant="none", dtype="bf16", tp_rank=0) -> KVRepresentationKey:
     # World size 2 so both ranks under test are legal; a rank must lie
     # inside its world, and rank 1 of a world of 1 does not exist.
-    return KVRepresentationKey(dtype, quant, "per-tensor", 16, "paged",
-                              "gqa:4kv/28q", tp_rank, 2, 1)
+    component = (KVComponentFormat.plain(dtype) if quant == "none" else
+                 KVComponentFormat(dtype, quant, "native", "little",
+                                   KVScaleMetadata(
+                                       "per-tensor", "fp32", "tensor", (1,),
+                                       "sha256:scale")))
+    return KVRepresentationKey(
+        component, component, 16, "paged", "gqa:4kv/28q",
+        KVPartitionMap.uniform(2, tp_rank, layers=28, kv_heads=4), 1)
 
 
 def make_identity(adapter, salt="shared-salt", quant="none", dtype="bf16",
@@ -82,7 +96,7 @@ case("#44250 PREVENTED: contract keys differ across adapters",
      correct_key(ADAPTER_A) != correct_key(ADAPTER_B))
 case("[REPRO] #30931/#42125 name-keyed COLLIDES on same-name reload",
      name_keyed_key(ADAPTER_A) == name_keyed_key(ADAPTER_B))
-case("#42125 PREVENTED: content+generation separate reloaded adapters",
+case("#42125 PREVENTED: changed loaded content separates reloads",
      correct_key(ADAPTER_A) != correct_key(ADAPTER_B))
 
 # 2. legal sharing preserved
@@ -90,7 +104,6 @@ case("legal sharing: identical inputs -> identical key",
      correct_key(ADAPTER_A) == correct_key(ADAPTER_A))
 case("label is not identity: rename (same content) -> same key",
      correct_key(ADAPTER_A) == correct_key(ADAPTER_A_RENAMED))
-
 # 3. layer isolation (the flat-key trap)
 case("representation isolation: bf16 vs k16v8 -> different key",
      correct_key(ADAPTER_A, quant="none") != correct_key(ADAPTER_A, quant="k16v8"))
@@ -148,12 +161,10 @@ case("an undeclared active feature is refused, not ignored",
      raises(lambda: check_obligations(
          make_identity(ADAPTER_A), {"adaptive_compression": "undeclared"})))
 case("a rank outside its world is not constructable",
-     raises(lambda: KVRepresentationKey("bf16", "none", "per-tensor", 16,
-                                        "paged", "gqa:4kv/28q", 1, 1, 1)),
+     raises(lambda: KVPartitionMap.uniform(1, 1, layers=28, kv_heads=4)),
      note="rank 1 of world 1 names a shard that cannot exist")
 case("a legal rank inside its world still constructs",
-     not raises(lambda: KVRepresentationKey("bf16", "none", "per-tensor", 16,
-                                            "paged", "gqa:4kv/28q", 1, 2, 1)))
+     not raises(lambda: KVPartitionMap.uniform(2, 1, layers=28, kv_heads=4)))
 
 
 def main() -> int:

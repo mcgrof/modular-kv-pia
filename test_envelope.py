@@ -19,10 +19,14 @@ import sys
 from kv_identity import (
     AdapterIdentity, ReuseSemantics, KVSemanticKey, KVAccessKey, KVBlockIdentity,
 )
-from kvblock import KVRepresentationKey
+from kvblock import (
+    KVComponentFormat,
+    KVPartitionMap,
+    KVRepresentationKey,
+    KVScaleMetadata,
+)
 from kv_envelope import (
-    GENESIS_ROOT, SCHEMA_VERSION, KVBlockEnvelope, build_envelope, canonical_cbor,
-    chain,
+    GENESIS_ROOT, SCHEMA_VERSION, build_envelope, canonical_cbor, chain,
 )
 
 TOKENS = b"you are a helpful assistant ... (long prompt) ... answer:"
@@ -36,8 +40,14 @@ ADAPTER_A_RENAMED = AdapterIdentity("renamed", "sha256:AAA", 1, "qkvo")
 def rep(quant="none", dtype="bf16", tp_rank=0) -> KVRepresentationKey:
     # World size 2 so both ranks under test are legal; a rank must lie
     # inside its world, and rank 1 of a world of 1 does not exist.
-    return KVRepresentationKey(dtype, quant, "per-tensor", 16, "paged",
-                               "gqa:4kv/28q", tp_rank, 2, 1)
+    component = (KVComponentFormat.plain(dtype) if quant == "none" else
+                 KVComponentFormat(dtype, quant, "native", "little",
+                                   KVScaleMetadata(
+                                       "per-tensor", "fp32", "tensor", (1,),
+                                       "sha256:scale")))
+    return KVRepresentationKey(
+        component, component, 16, "paged", "gqa:4kv/28q",
+        KVPartitionMap.uniform(2, tp_rank, layers=28, kv_heads=4), 1)
 
 
 def ident(adapter, salt="shared-salt", quant="none", dtype="bf16", tp_rank=0):
@@ -105,7 +115,9 @@ case("determinism: same inputs -> same key",
 # --- the envelope exposes representation but not identity ----------------- #
 env = build_envelope(ident(ADAPTER_A), GENESIS_ROOT, TOKENS)
 case("representation metadata is exposed for transport",
-     env.representation["kv_dtype"] == "bf16" and env.representation["tp_rank"] == 0)
+     env.representation["k"]["dtype"] == "bf16"
+     and env.representation["v"]["dtype"] == "bf16"
+     and env.representation["partition"]["worker_id"] == 0)
 case("no semantic or access digest is exposed as a separate field",
      not any(k in env.representation for k in ("semantic", "access", "adapter")))
 case("envelope serializes to canonical CBOR",

@@ -133,7 +133,8 @@ versioned constant, but root instability is no longer a claimed contribution.
 **Representation coverage is incomplete, not absent.** LMCache's composite
 `CacheEngineKey` already includes dtype, world size, and worker id. The gap to
 demonstrate is codec, scale policy, layout, and page size at the composite-key
-and reader-validation boundary.
+and reader-validation boundary. The representation schema keeps K and V formats
+and scale metadata separate and carries the resolved partition map.
 
 ## 5. Proposal
 
@@ -145,8 +146,9 @@ KVBlockEnvelope (wire v1, canonical CBOR):
   external_key   : bytes   # H(semantic, representation, access, parent, tokens)
                            # opaque and complete; connectors key on this verbatim
   representation :         # non-secret metadata a transport may act on:
-      kv_dtype, quant_codec, scale_policy, page_size, layout,
-      head_geometry, tp_rank, tp_world, wire_version
+      k: {dtype, codec, packing, byte_order, scale}
+      v: {dtype, codec, packing, byte_order, scale}
+      page_size, layout, head_geometry, partition_map, wire_version
   schema_version : u16
 ```
 

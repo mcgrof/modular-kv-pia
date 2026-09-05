@@ -15,11 +15,10 @@ identical values, so a Rust or C++ producer agrees with this one without
 sharing code. `canonical_cbor()` implements the subset the envelope needs and
 is checked against the `cbor2` library where that library is installed.
 
-The chain root is a constant. vLLM seeds its own hash chain with
-`os.urandom(32)` unless `PYTHONHASHSEED` is set, which makes every derived key
-private to one process -- fine for a cache that dies with the engine, useless
-for a shared one. `GENESIS_ROOT` is a fixed digest instead, so a key computed
-on one host means the same thing on another with no environment to configure.
+The chain root is a contract constant, so a key computed on one host means the
+same thing on another without relying on engine defaults or process-local
+state.  Current vLLM cryptographic hashing also has a shareable default root;
+the earlier unconditional random-root claim was stale and is not relied on.
 
 stdlib only.
 """
@@ -123,15 +122,41 @@ class KVBlockEnvelope:
 def representation_fields(identity: KVBlockIdentity) -> dict:
     """The transport-visible half of the identity, as plain values."""
     r = identity.representation
+    def component_fields(component) -> dict:
+        return {
+            "dtype": component.dtype,
+            "codec": component.codec,
+            "packing": component.packing,
+            "byte_order": component.byte_order,
+            "scale": {
+                "policy": component.scale.policy,
+                "dtype": component.scale.dtype,
+                "axis": component.scale.axis,
+                "shape": list(component.scale.shape),
+                "storage_format": component.scale.storage_format,
+            },
+        }
+
     return {
-        "kv_dtype": r.kv_dtype,
-        "quant_codec": r.quant_codec,
-        "scale_policy": r.scale_policy,
+        "k": component_fields(r.k),
+        "v": component_fields(r.v),
         "page_size": r.page_size,
         "layout": r.layout,
         "head_geometry": r.head_geometry,
-        "tp_rank": r.tp_rank,
-        "tp_world": r.tp_world,
+        "partition": {
+            "world_size": r.partition.world_size,
+            "worker_id": r.partition.worker_id,
+            "shards": [
+                {
+                    "worker_id": shard.worker_id,
+                    "layer_start": shard.layer_start,
+                    "layer_stop": shard.layer_stop,
+                    "kv_head_start": shard.kv_head_start,
+                    "kv_head_stop": shard.kv_head_stop,
+                }
+                for shard in r.partition.shards
+            ],
+        },
         "wire_version": r.wire_version,
     }
 

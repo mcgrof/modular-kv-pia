@@ -45,7 +45,7 @@ bag of fields:
 | Layer | Holds | Answers |
 |---|---|---|
 | Semantic | base-model fingerprint, adapter identity, RoPE and attention semantics, tokenizer hash, multimodal preprocessing hash, reuse semantics | Does this block hold the same *numbers*? |
-| Representation | dtype, quantization codec, scale policy, page size, layout, head geometry, tensor-parallel rank and world, wire version | Are the *bytes* encoded the same way? |
+| Representation | separate K/V formats, scale metadata, page size, layout, head geometry, and a resolved partition map | Are the *bytes* encoded the same way? |
 | Access | cache salt, tenant, label isolation | Is this block *allowed* to be shared here? |
 
 The separation is what keeps the three concerns from contaminating each other. A

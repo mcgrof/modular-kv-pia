@@ -12,8 +12,8 @@ Rules (see docs/ + the design writeup):
     (shared, from kvblock) / Access.
   * derive_key() is TOTAL: no external key can be built from a subset -- the
     #44250 failure (connector drops the LoRA dimension) becomes impossible.
-  * Identity from STABLE sources (content hash + generation), not names
-    (#30931 / #42125).
+  * Identity from content plus a lifecycle generation, not names. A registry
+    is still needed to make the content source trustworthy and portable.
 stdlib only.
 """
 
@@ -22,12 +22,14 @@ from __future__ import annotations
 from dataclasses import dataclass, field, fields, is_dataclass
 from typing import Any
 
-from kvblock import KVRepresentationKey, enc, sha, s, i  # shared base
-
-
-# Marks a field as deliberately outside the identity. Anything without it is
-# part of the digest, so forgetting the annotation is the safe direction.
-IDENTITY_EXCLUDED = {"identity": False}
+from kvblock import (
+    IDENTITY_EXCLUDED,
+    KVRepresentationKey,
+    enc,
+    encode_schema,
+    sha,
+    s,
+)
 
 
 # --------------------------------------------------------------------------- #
@@ -36,14 +38,14 @@ IDENTITY_EXCLUDED = {"identity": False}
 
 @dataclass(frozen=True)
 class AdapterIdentity:
-    """`name` is a LABEL, not identity. Identity = (content_hash, generation)."""
+    """`name` is a label; content and generation currently form identity."""
     # Excluded from the digest on purpose: an adapter renamed with unchanged
     # weights is the same adapter and must keep its cache. The exclusion is
     # declared on the field so it is visible where the field is, and so that
     # the default for anything added later is to be included.
     name: str = field(metadata=IDENTITY_EXCLUDED)
-    content_hash: str    # sha256 of adapter weights -- the STABLE source
-    generation: int      # immutable counter, bumped on every (re)load
+    content_hash: str
+    generation: int
     activation_policy: str
 
     @staticmethod
@@ -88,7 +90,7 @@ class KVSemanticKey:
     reuse: ReuseSemantics
 
     def digest(self) -> str:
-        return sha(enc("semantic", encode_fields(self)))
+        return sha(encode_schema("semantic", 1, self))
 
 
 @dataclass(frozen=True)
@@ -98,44 +100,7 @@ class KVAccessKey:
     label_isolation: str = ""
 
     def digest(self) -> str:
-        return sha(enc("access", encode_fields(self)))
-
-
-def _encode_value(value: Any) -> bytes:
-    if isinstance(value, bool):
-        # bool is an int subclass; encoding True as 1 would collide with the
-        # integer, so refuse it rather than silently merge the two.
-        raise TypeError("bool is not an identity field type")
-    if isinstance(value, int):
-        return i(value)
-    if isinstance(value, str):
-        return s(value)
-    if is_dataclass(value):
-        return encode_fields(value)
-    raise TypeError(f"identity field type is not encodable: {type(value).__name__}")
-
-
-def encode_fields(obj: Any) -> bytes:
-    """Encode every declared field of a dataclass, recursively.
-
-    Deriving the encoding from the field list rather than writing it out by
-    hand is what makes a new field impossible to forget. A hand-written digest
-    keeps returning the old value when a field is added, so two identities that
-    differ only in the new dimension collide -- silently, and in exactly the
-    way this whole contract exists to prevent. Field names are encoded
-    alongside values so that renaming or reordering also changes the digest.
-
-    A field may be held outside the identity by tagging it with
-    IDENTITY_EXCLUDED, which keeps the decision next to the field instead
-    of inside a digest function nobody rereads.
-    """
-    parts: list[bytes] = []
-    for f in fields(obj):
-        if not f.metadata.get("identity", True):
-            continue
-        parts.append(s(f.name))
-        parts.append(_encode_value(getattr(obj, f.name)))
-    return enc("fields", *parts)
+        return sha(encode_schema("access", 1, self))
 
 
 def _require_no_none(obj: Any, path: str = "") -> None:
