@@ -19,10 +19,15 @@ stdlib only.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, fields, is_dataclass
+from dataclasses import dataclass, field, fields, is_dataclass
 from typing import Any
 
 from kvblock import KVRepresentationKey, enc, sha, s, i  # shared base
+
+
+# Marks a field as deliberately outside the identity. Anything without it is
+# part of the digest, so forgetting the annotation is the safe direction.
+IDENTITY_EXCLUDED = {"identity": False}
 
 
 # --------------------------------------------------------------------------- #
@@ -32,7 +37,11 @@ from kvblock import KVRepresentationKey, enc, sha, s, i  # shared base
 @dataclass(frozen=True)
 class AdapterIdentity:
     """`name` is a LABEL, not identity. Identity = (content_hash, generation)."""
-    name: str
+    # Excluded from the digest on purpose: an adapter renamed with unchanged
+    # weights is the same adapter and must keep its cache. The exclusion is
+    # declared on the field so it is visible where the field is, and so that
+    # the default for anything added later is to be included.
+    name: str = field(metadata=IDENTITY_EXCLUDED)
     content_hash: str    # sha256 of adapter weights -- the STABLE source
     generation: int      # immutable counter, bumped on every (re)load
     activation_policy: str
@@ -46,9 +55,6 @@ class AdapterIdentity:
         return (self.content_hash == "" and self.generation == 0
                 and self.activation_policy == "none")
 
-    def parts(self) -> tuple[bytes, ...]:
-        # `name` deliberately EXCLUDED from identity.
-        return (s(self.content_hash), i(self.generation), s(self.activation_policy))
 
 
 @dataclass(frozen=True)
@@ -68,9 +74,6 @@ class ReuseSemantics:
     def exact() -> "ReuseSemantics":
         return ReuseSemantics("exact")
 
-    def parts(self) -> tuple[bytes, ...]:
-        return (s(self.mode), s(self.policy_digest), s(self.recompute_mask),
-                s(self.commit_policy))
 
 
 @dataclass(frozen=True)
@@ -85,13 +88,7 @@ class KVSemanticKey:
     reuse: ReuseSemantics
 
     def digest(self) -> str:
-        return sha(enc(
-            "semantic",
-            s(self.base_model_fingerprint), *self.adapter.parts(),
-            s(self.rope_semantics), s(self.attention_semantics),
-            s(self.tokenizer_hash), s(self.mm_preprocess_hash),
-            *self.reuse.parts(),
-        ))
+        return sha(enc("semantic", encode_fields(self)))
 
 
 @dataclass(frozen=True)
@@ -101,8 +98,44 @@ class KVAccessKey:
     label_isolation: str = ""
 
     def digest(self) -> str:
-        return sha(enc("access", s(self.cache_salt), s(self.tenant),
-                       s(self.label_isolation)))
+        return sha(enc("access", encode_fields(self)))
+
+
+def _encode_value(value: Any) -> bytes:
+    if isinstance(value, bool):
+        # bool is an int subclass; encoding True as 1 would collide with the
+        # integer, so refuse it rather than silently merge the two.
+        raise TypeError("bool is not an identity field type")
+    if isinstance(value, int):
+        return i(value)
+    if isinstance(value, str):
+        return s(value)
+    if is_dataclass(value):
+        return encode_fields(value)
+    raise TypeError(f"identity field type is not encodable: {type(value).__name__}")
+
+
+def encode_fields(obj: Any) -> bytes:
+    """Encode every declared field of a dataclass, recursively.
+
+    Deriving the encoding from the field list rather than writing it out by
+    hand is what makes a new field impossible to forget. A hand-written digest
+    keeps returning the old value when a field is added, so two identities that
+    differ only in the new dimension collide -- silently, and in exactly the
+    way this whole contract exists to prevent. Field names are encoded
+    alongside values so that renaming or reordering also changes the digest.
+
+    A field may be held outside the identity by tagging it with
+    IDENTITY_EXCLUDED, which keeps the decision next to the field instead
+    of inside a digest function nobody rereads.
+    """
+    parts: list[bytes] = []
+    for f in fields(obj):
+        if not f.metadata.get("identity", True):
+            continue
+        parts.append(s(f.name))
+        parts.append(_encode_value(getattr(obj, f.name)))
+    return enc("fields", *parts)
 
 
 def _require_no_none(obj: Any, path: str = "") -> None:
@@ -138,8 +171,28 @@ def derive_key(identity: KVBlockIdentity, parent_key: str,
                    s(d["access"]), s(parent_key), block_token_bytes))
 
 
+KNOWN_OBLIGATIONS = frozenset({
+    "has_adapter", "quant_codec", "multimodal", "approximate_reuse",
+})
+
+
 def check_obligations(identity: KVBlockIdentity, manifest: dict) -> None:
-    """Manifest boundary: assert active dimensions are reflected in the key."""
+    """Manifest boundary: assert active dimensions are reflected in the key.
+
+    An unrecognised entry is refused rather than ignored. A checker that skips
+    what it does not understand reports success for exactly the case it was
+    built to catch: a feature has been switched on, it may well change the
+    cached values, and nothing here knows whether the key accounts for it.
+    Silence there is indistinguishable from a pass, so a new feature reaches
+    production with no obligation attached to it at all.
+    """
+    unknown = set(manifest) - KNOWN_OBLIGATIONS
+    if unknown:
+        raise ValueError(
+            "OBLIGATION: manifest declares features this checker does not "
+            f"know how to verify: {sorted(unknown)}. Add a check, or the key "
+            "cannot be claimed complete for them.")
+
     sem = identity.semantic
     if manifest.get("has_adapter") and sem.adapter.is_none:
         raise ValueError("OBLIGATION: adapter active but identity is none() (#44250)")

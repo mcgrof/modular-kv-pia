@@ -11,6 +11,7 @@ Run:  python3 conformance.py   (stdlib only; exit 0 iff all cases pass)
 from __future__ import annotations
 
 import sys
+from dataclasses import dataclass
 
 from kvblock import KVRepresentationKey, enc, sha, s   # shared base
 from kv_identity import (
@@ -119,6 +120,40 @@ case("obligation: fully-specified adapter identity -> PASS",
      not raises(lambda: check_obligations(
          make_identity(ADAPTER_A, quant="k16v8"),
          {"has_adapter": True, "quant_codec": "k16v8"})))
+
+
+# 6. defects found by independent review (2026-09-04) -- kept as regressions
+from dataclasses import replace, fields as _dc_fields  # noqa: E402
+
+
+@dataclass(frozen=True)
+class _ExtendedSemanticKey(KVSemanticKey):
+    """A new required dimension, added the way a real one would be."""
+    compression_policy_digest: str = ""
+
+
+def _with_extended(policy: str) -> KVBlockIdentity:
+    base = make_identity(ADAPTER_A)
+    carried = {f.name: getattr(base.semantic, f.name)
+               for f in _dc_fields(KVSemanticKey)}
+    return replace(base, semantic=_ExtendedSemanticKey(
+        **carried, compression_policy_digest=policy))
+
+
+case("a new required field reaches the key without editing the digest",
+     derive_key(_with_extended("policy-A"), PARENT, TOKENS)
+     != derive_key(_with_extended("policy-B"), PARENT, TOKENS),
+     note="hand-written digests returned the old value and collided")
+case("an undeclared active feature is refused, not ignored",
+     raises(lambda: check_obligations(
+         make_identity(ADAPTER_A), {"adaptive_compression": "undeclared"})))
+case("a rank outside its world is not constructable",
+     raises(lambda: KVRepresentationKey("bf16", "none", "per-tensor", 16,
+                                        "paged", "gqa:4kv/28q", 1, 1, 1)),
+     note="rank 1 of world 1 names a shard that cannot exist")
+case("a legal rank inside its world still constructs",
+     not raises(lambda: KVRepresentationKey("bf16", "none", "per-tensor", 16,
+                                            "paged", "gqa:4kv/28q", 1, 2, 1)))
 
 
 def main() -> int:
