@@ -1,37 +1,51 @@
-# modular-kv
+# modular-kv-pia
 
-KV-block primitives for Modular MAX/Mojo, plus two **separate** use cases that
-build on them. Split into three branches so the concerns don't get conflated
-(they did once — see below).
+Research prototypes for **Prefix Integrity Analysis (PIA)**: checking whether a
+saved transformer key/value cache can be reused without confusing two different
+models, adapters, byte layouts, users, or requests.
 
-## Branches
+The repository also contains a separate asymmetric-quantization experiment.
+That experiment makes cache data smaller; PIA decides whether cache data is safe
+to reuse. They share a description of the stored bytes but solve different
+problems.
 
-| Branch | What it is |
-|---|---|
-| `main` | **Shared base.** Generic KV-block primitives only: the canonical, cross-language key encoding and the `KVRepresentationKey` descriptor (how a block's bytes are laid out / encoded). Both use cases import this. Nothing use-case-specific lives here. |
-| `kv-compat` | **KV-cache compatibility** (the primary goal). A provenance-complete, layered block *identity* contract so a cached KV block is only reused when it is truly compatible — making the vLLM #44250 LoRA "clash" class un-representable. Conformance suite + Mojo compile-time totality + the KVConnector-v1 provenance-envelope proposal. |
-| `kv-asym-quant` | **Asymmetric KV quantization codec** (useful, but a *different* concern — KV *compression/movement*, not compatibility). K16/V8 pack/unpack. Kept on its own branch so it is not mistaken for the compatibility work. |
+## Which branch should I read?
 
-`main` is the generic trunk; `kv-compat` and `kv-asym-quant` each branch from it
-and add only their own code. They share `main`'s descriptor + encoding.
+| Branch | Purpose | Status |
+|---|---|---|
+| [`main`](https://github.com/mcgrof/modular-kv-pia/tree/main) | Shared cache-block description and stable encoding used by the experiments. | Start here for the common data model. |
+| [`kv-compat`](https://github.com/mcgrof/modular-kv-pia/tree/kv-compat) | First PIA compatibility prototype: complete cache identity, executable collision reproductions, a Python wire envelope, and a Mojo required-field demonstration. | Historical foundation for the newer resolved-request branch. |
+| [`2026-09-04-feature-resolved-kv-contract`](https://github.com/mcgrof/modular-kv-pia/tree/2026-09-04-feature-resolved-kv-contract) | Extends `kv-compat` with model-artifact registration, immutable handles, and a request description intended to supply cache addresses to serving systems. | Current scaling prototype; public for collaboration, not production-ready. |
+| [`kv-asym-quant`](https://github.com/mcgrof/modular-kv-pia/tree/kv-asym-quant) | Keeps keys at 16 bits while quantizing values to 8 bits in a first-cut Mojo codec. | Separate compression experiment, not a PIA implementation branch. |
 
-## Why the split
+[`BRANCHES.md`](BRANCHES.md) explains the ancestry, the integration branches in
+vLLM and LMCache, and the current limitations in more detail.
 
-The compatibility idea (KV blocks that know when they're safe to reuse) got
-conflated with the asymmetric-quantization codec (KV bytes packed smaller). They
-are different: one is **correctness/identity**, the other is
-**performance/representation**. The only genuine shared surface is the
-`KVRepresentationKey` descriptor — a compatibility *key layer* on one side, and
-the thing the codec *consumes to know how to pack* on the other. That shared
-surface lives on `main`; everything else is branch-specific.
+## The shared idea
 
-## Running
+A cache lookup normally starts from the prompt tokens. Tokens alone are not
+enough: the same tokens processed by different model weights, fine-tuning
+adapters, attention rules, byte layouts, or access policies can produce cache
+objects that must not be mixed.
 
-- Python (`main`, `kv-compat`): stdlib only. `python3 conformance.py` on
-  `kv-compat`.
-- Mojo (all branches): needs the MAX/Mojo env on prune's W7900 —
-  `~/envs/modular-max` (see the `modular` shared skill). GPU work targets
-  gfx1100.
+PIA therefore divides cache identity into three parts:
 
-Design docs / writeups live in
-`/data/knlp-key-results/modular-kv-provenance-contract-20260707/`.
+- **Meaning:** which model computation produced the numbers.
+- **Representation:** how those numbers are arranged and encoded as bytes.
+- **Access:** which tenant or isolation domain is allowed to reuse them.
+
+The active prototype registers the files actually loaded by the model runtime,
+binds a request to that registration, and derives an opaque 32-byte address for
+each cache chunk. A connector should carry that address unchanged rather than
+rebuilding a weaker address from tokens.
+
+## Current boundary
+
+This is research code. A bounded one-GPU experiment carried an externally
+derived address through vLLM and LMCache and restored the stored tensors exactly.
+It did not run a complete model server, did not test more than one worker, and
+did not measure performance. A September 2026 review also found correctness
+problems that must be fixed before an upstream proposal.
+
+The public research status, results, design choices, and work list live on the
+[scaling PIA page](https://knlp.io/prefix-integrity-analysis-scaling.html).
